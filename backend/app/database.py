@@ -5,6 +5,7 @@ except ImportError:
     HAS_PYODBC = False
 
 import sqlite3
+import re
 from contextlib import contextmanager
 from typing import Generator, Any, Optional, List, Dict
 from app.config import MSSQL_DRIVER, MSSQL_SERVER, MSSQL_DATABASE, MSSQL_TRUSTED_CONNECTION, DB_PATH
@@ -31,20 +32,58 @@ class DictRow(dict):
         return super().get(key, default)
 
 class DictCursor:
-    """Wrapper around Cursor to provide dict-like rows and lastrowid support."""
+    """Wrapper around Cursor to provide dict-like rows and lastrowid support with transparent cross-engine compatibility."""
     def __init__(self, raw_cursor: Any):
         self._raw = raw_cursor
         self.lastrowid: Optional[int] = getattr(raw_cursor, 'lastrowid', None)
+        self.rowcount: int = getattr(raw_cursor, 'rowcount', -1)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._raw, name)
 
     def execute(self, query: str, params: tuple = None) -> 'DictCursor':
+        is_sqlite = isinstance(self._raw, sqlite3.Cursor)
+        if is_sqlite:
+            # 1. Compatibility: GETDATE() -> CURRENT_TIMESTAMP
+            query = re.sub(r'\bGETDATE\(\)', 'CURRENT_TIMESTAMP', query, flags=re.IGNORECASE)
+
+            # 2. Compatibility: SELECT TOP N -> SELECT ... LIMIT N
+            top_match = re.search(r'\bSELECT\s+TOP\s+(\d+)\b', query, flags=re.IGNORECASE)
+            if top_match:
+                limit_num = top_match.group(1)
+                query = re.sub(r'\bSELECT\s+TOP\s+\d+\s+', 'SELECT ', query, count=1, flags=re.IGNORECASE)
+                if not re.search(r'\bLIMIT\b', query, flags=re.IGNORECASE):
+                    query = query.rstrip().rstrip(';') + f' LIMIT {limit_num}'
+
+            # 3. Compatibility: INSERT ... OUTPUT INSERTED.col1, INSERTED.col2 ... VALUES ...
+            output_match = re.search(r'\bOUTPUT\s+(INSERTED\.[^Vv]+?)(?=\s*\bVALUES\b)', query, re.IGNORECASE | re.DOTALL)
+            if output_match:
+                raw_cols = output_match.group(1)
+                col_names = [re.sub(r'(?i)inserted\.', '', c).strip(' []"`\'') for c in raw_cols.split(',')]
+                table_match = re.search(r'\bINSERT\s+INTO\s+([^\s\(]+)', query, re.IGNORECASE)
+                clean_query = query[:output_match.start()] + query[output_match.end():]
+
+                if params is not None:
+                    self._raw.execute(clean_query, params)
+                else:
+                    self._raw.execute(clean_query)
+
+                self.lastrowid = getattr(self._raw, 'lastrowid', None)
+                self.rowcount = getattr(self._raw, 'rowcount', 1)
+
+                if table_match and self.lastrowid is not None:
+                    table_name = table_match.group(1).strip('[]"`\'')
+                    cols_sql = ', '.join(f'"{c}"' for c in col_names)
+                    self._raw.execute(f'SELECT {cols_sql} FROM "{table_name}" WHERE rowid = ?', (self.lastrowid,))
+                return self
+
         if params is not None:
             self._raw.execute(query, params)
         else:
             self._raw.execute(query)
+
         self.lastrowid = getattr(self._raw, 'lastrowid', None)
+        self.rowcount = getattr(self._raw, 'rowcount', -1)
         return self
 
     def fetchone(self) -> Optional[DictRow]:

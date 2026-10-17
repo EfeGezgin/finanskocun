@@ -82,7 +82,7 @@ def update_account_balance(account_id: int, new_balance: float, user_id: Optiona
         cursor = conn.cursor()
         cursor.execute("""
             UPDATE accounts 
-            SET balance = ?, updated_at = GETDATE() 
+            SET balance = ?, updated_at = CURRENT_TIMESTAMP 
             WHERE id = ? AND user_id = ?
         """, (new_balance, account_id, user_id))
         return cursor.rowcount > 0

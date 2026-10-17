@@ -1,6 +1,10 @@
 from typing import List, Optional, Tuple, Dict, Any
 from datetime import datetime, date, timedelta
-from dateutil.relativedelta import relativedelta
+try:
+    from dateutil.relativedelta import relativedelta
+except ImportError:
+    def relativedelta(months=0, days=0):
+        return timedelta(days=int(months * 30.4375) + days)
 from app.database import get_db
 from app.models.schemas import (
     CreditCardCreate, CreditCardResponse, CardLimitAndDebtUpdate,

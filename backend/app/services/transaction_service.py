@@ -125,6 +125,7 @@ def create_transaction(trans: TransactionCreate, user_id: Optional[int] = None) 
                 cursor.execute("UPDATE accounts SET balance = balance + ? WHERE id = ? AND user_id = ?", (trans.amount, target_account_id, user_id))
 
         # Case B: Credit card is involved
+        is_debt_payment = False
         if target_card_id:
             desc_lower = (trans.description or "").lower()
             cat_lower = (trans.category or "").lower()
